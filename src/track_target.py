@@ -114,6 +114,7 @@ def main(
     print("=" * 65)
     print("Controls:")
     print("  'I'       : Invert Pan Direction (Flip if motor pans opposite)")
+    print("  'M'       : Toggle Mode (1 = Camera on Servo, 2 = Fixed Camera Pointer)")
     print("  'R'       : Recenter Servo (90 deg)")
     print("  '1'       : Instant Direct 1-to-1 Mode (Max accuracy)")
     print("  '2'       : Smooth Cinematic Mode")
@@ -124,6 +125,8 @@ def main(
 
     servo_angle = 90.0
     filtered_angle = 90.0
+    last_sent_angle = 90
+    hardware_mode = 1  # 1 = Camera Mounted on Servo, 2 = Fixed Camera (Desk Pointer)
     tracking_enabled = True
     invert_direction = invert
     gain = 1.0
@@ -201,30 +204,40 @@ def main(
             angle_error_deg = norm_error * half_fov
 
             if tracking_enabled:
-                # Direct 1-to-1 Angular Correction
-                # Deadzone: 1.5% for instant direct mode, 5% for smooth mode
-                deadzone = 0.015 if (tracking_mode == 1) else 0.05
-
-                if abs(norm_error) > deadzone:
-                    # Angular step proportional to physical displacement
-                    if tracking_mode == 1:
-                        # Instant 1-to-1 mode: direct high-gain angular tracking
-                        kp = 0.45 * gain
-                        kd = 0.15 * gain
-                        d_angle = angle_error_deg - prev_angle_deg
-                        step = (kp * angle_error_deg) + (kd * d_angle)
+                # Tracking Mode Logic:
+                # hardware_mode 1: Mounted Camera (Pan base - closed-loop centering)
+                # hardware_mode 2: Fixed Camera (Camera on monitor, servo points at face)
+                if hardware_mode == 2:
+                    # Absolute direct mapping: Face angle maps directly to servo pointing angle
+                    sign = -1.0 if invert_direction else 1.0
+                    target_angle = 90.0 + (sign * angle_error_deg * gain)
+                    servo_angle = float(np.clip(target_angle, 15.0, 165.0))
+                    
+                    if abs(norm_error) <= 0.06:
+                        direction_label = "CENTERED [LOCKED]"
                     else:
-                        # Smooth cinematic mode
-                        step = np.sign(norm_error) * (abs(norm_error) - deadzone) * (3.0 * gain)
+                        direction_label = "POINTING RIGHT ->" if (target_angle > 90) else "<- POINTING LEFT"
 
-                    if invert_direction:
-                        step = -step
-
-                    # Apply step and clamp strictly within SG90 safe range [15 deg, 165 deg]
-                    servo_angle = float(np.clip(servo_angle + step, 15.0, 165.0))
-                    direction_label = "TRACKING RIGHT ->" if (step > 0) else "<- TRACKING LEFT"
                 else:
-                    direction_label = "CENTERED [EXACT]"
+                    # Mounted Camera Mode: Smooth closed-loop recentering with comfortable deadzone
+                    # Deadzone of 7% (approx +-22px) keeps servo completely still when facing camera
+                    deadzone = 0.07 if (tracking_mode == 1) else 0.10
+
+                    if abs(norm_error) > deadzone:
+                        # Smooth proportional adjustment
+                        err_mag = abs(norm_error) - deadzone
+                        # Max step speed 1.8 deg/frame to prevent blurring and overshooting
+                        step = np.clip(err_mag * 18.0 * gain, 0.3, 1.8)
+                        step = -step if (norm_error < 0) else step
+
+                        if invert_direction:
+                            step = -step
+
+                        servo_angle = float(np.clip(servo_angle + step, 15.0, 165.0))
+                        direction_label = "TRACKING RIGHT ->" if (step > 0) else "<- TRACKING LEFT"
+                    else:
+                        # Inside deadzone: Keep servo stable and still!
+                        direction_label = "CENTERED [STABLE]"
 
                 prev_angle_deg = angle_error_deg
 
@@ -239,49 +252,57 @@ def main(
             else:
                 direction_label = "HOLDING POSITION"
 
-        # Mode-dependent filtering: Direct 1-to-1 is near-instant (alpha=0.85), Cinematic is smooth (alpha=0.35)
-        alpha = 0.85 if (tracking_mode == 1) else 0.35
+        # Low-pass filter for smooth motion (alpha = 0.60 direct, 0.30 cinematic)
+        alpha = 0.60 if (tracking_mode == 1) else 0.30
         filtered_angle = (1.0 - alpha) * filtered_angle + alpha * servo_angle
 
-        # Fast 35Hz drive to ESP8266 (Serial + UDP)
-        if (ser or sock) and tracking_enabled and (now - last_command_time > 0.028):
-            send_angle = int(round(np.clip(filtered_angle, 15.0, 165.0)))
-            cmd_bytes = f"{send_angle}\n".encode("ascii")
+        # Anti-jitter drive to ESP8266: Only transmit when angle integer changes by >= 1 deg
+        new_int_angle = int(round(np.clip(filtered_angle, 15.0, 165.0)))
+        if (ser or sock) and tracking_enabled:
+            angle_delta = abs(new_int_angle - last_sent_angle)
+            time_since_send = now - last_command_time
 
-            if ser:
-                ser.write(cmd_bytes)
-                ser.flush()
+            # Transmit if angle changed, or at least every 0.5s heartbeat
+            if (angle_delta >= 1 and time_since_send > 0.035) or (time_since_send > 0.5):
+                cmd_bytes = f"{new_int_angle}\n".encode("ascii")
 
-            if sock and ip:
-                try:
-                    sock.sendto(cmd_bytes, (ip, udp_port))
-                except Exception:
-                    pass
+                if ser:
+                    ser.write(cmd_bytes)
+                    ser.flush()
 
-            last_command_time = now
+                if sock and ip:
+                    try:
+                        sock.sendto(cmd_bytes, (ip, udp_port))
+                    except Exception:
+                        pass
 
-            if now - last_print_time > 0.25:
-                err_str = f"{angle_error_deg:+5.1f} deg ({offset_px:+4.0f}px)" if target_box is not None else "        N/A       "
-                dest_str = f"IP: {ip}" if ip else (f"Port: {serial_port}" if serial_port else "No Link")
-                print(f"[1-to-1 Tracker] '{target_name}' [{direction_label:<18s}] Error: {err_str} | Servo: {send_angle:3d} deg | {dest_str}")
-                last_print_time = now
+                last_sent_angle = new_int_angle
+                last_command_time = now
+
+        if now - last_print_time > 0.25:
+            hw_str = "MOUNTED CAM" if (hardware_mode == 1) else "FIXED CAM POINTER"
+            err_str = f"{angle_error_deg:+5.1f} deg ({offset_px:+4.0f}px)" if target_box is not None else "        N/A       "
+            dest_str = f"Port: {serial_port}" if serial_port else ("IP: " + ip if ip else "No Link")
+            print(f"[Tracker] '{target_name}' [{direction_label:<18s}] Error: {err_str} | Servo: {new_int_angle:3d} deg | [{hw_str}]")
+            last_print_time = now
 
         # Center crosshairs
         cv2.line(frame, (int(center_x), 0), (int(center_x), H), (0, 180, 255), 1)
         cv2.line(frame, (0, int(center_y)), (W, int(center_y)), (60, 60, 60), 1)
 
         # On-screen HUD
+        hw_str = "MOUNTED CAM" if (hardware_mode == 1) else "FIXED POINTER"
         mode_str = "1-to-1 DIRECT" if (tracking_mode == 1) else "SMOOTH CINEMATIC"
         inv_str = "INVERTED" if invert_direction else "NORMAL"
 
         cv2.putText(frame, f"Target: {target_name} | [{direction_label}]", (15, 28),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 0), 2)
         
-        hud_line2 = f"Servo: {int(round(filtered_angle))} deg | Offset: {angle_error_deg:+.1f} deg | Mode: {mode_str} [1/2]"
+        hud_line2 = f"Servo: {new_int_angle} deg | Offset: {angle_error_deg:+.1f} deg | Mode: {mode_str} [1/2]"
         cv2.putText(frame, hud_line2, (15, 55), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (0, 255, 255), 2)
 
-        hud_line3 = f"Direction: {inv_str} [Key 'I'] | Gain: {gain:.1f}x [+/-]"
-        cv2.putText(frame, hud_line3, (15, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (200, 200, 200), 1)
+        hud_line3 = f"Rig: [{hw_str} - Key 'M'] | Dir: {inv_str} ['I'] | Gain: {gain:.1f}x [+/-]"
+        cv2.putText(frame, hud_line3, (15, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (200, 200, 200), 1)
 
         if not tracking_enabled:
             cv2.putText(frame, "[PAUSED - Press SPACE to Resume]", (15, 110),
@@ -290,7 +311,7 @@ def main(
         # Angle Gauge Bar
         gauge_x, gauge_y, gauge_w, gauge_h = 15, H - 25, 240, 14
         cv2.rectangle(frame, (gauge_x, gauge_y), (gauge_x + gauge_w, gauge_y + gauge_h), (80, 80, 80), 1)
-        fill_w = int(((filtered_angle - 15.0) / 150.0) * gauge_w)
+        fill_w = int(((new_int_angle - 15.0) / 150.0) * gauge_w)
         cv2.rectangle(frame, (gauge_x, gauge_y), (gauge_x + fill_w, gauge_y + gauge_h), (0, 230, 255), -1)
         cv2.putText(frame, "15 deg", (gauge_x, gauge_y - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (180, 180, 180), 1)
         cv2.putText(frame, "165 deg", (gauge_x + gauge_w - 40, gauge_y - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (180, 180, 180), 1)
@@ -300,6 +321,10 @@ def main(
         key = cv2.waitKey(1) & 0xFF
         if key == ord("q"):
             break
+        elif key == ord("m"):
+            hardware_mode = 2 if (hardware_mode == 1) else 1
+            mode_name = "MOUNTED CAM (Pan-Base Recentering)" if (hardware_mode == 1) else "FIXED CAM (Direct Pointer to Face)"
+            print(f"\n[Hardware Mode] Switched to: {mode_name}\n")
         elif key == ord("i"):
             invert_direction = not invert_direction
             print(f"\n[Config] Pan Direction: {'INVERTED' if invert_direction else 'NORMAL'}\n")
