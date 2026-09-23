@@ -12,6 +12,8 @@ import numpy as np
 # Canonical MediaPipe FaceMesh landmark indices
 LEFT_EYE = (33, 160, 158, 133, 153, 144)
 RIGHT_EYE = (362, 385, 387, 263, 373, 380)
+LEFT_EYE_CENTER = (159, 145)
+RIGHT_EYE_CENTER = (386, 374)
 MOUTH_LEFT, MOUTH_RIGHT = 61, 291
 LIP_TOP, LIP_BOTTOM = 13, 14
 FACE_LEFT, FACE_RIGHT = 234, 454
@@ -21,13 +23,21 @@ def distance(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.linalg.norm(a - b))
 
 
-def eye_aspect_ratio(points: np.ndarray, idx: Tuple[int, ...]) -> float:
+def eye_aspect_ratio(
+    points: np.ndarray,
+    idx: Tuple[int, ...],
+    center_idx: Optional[Tuple[int, int]] = None,
+) -> float:
     """
     Computes Eye Aspect Ratio (EAR):
     EAR = (|p2 - p6| + |p3 - p5|) / (2 * |p1 - p4|)
+    If center_idx is provided, incorporates center eyelid vertical distance for enhanced blink sensitivity.
     """
     p1, p2, p3, p4, p5, p6 = (points[i] for i in idx)
     width = max(distance(p1, p4), 1e-6)
+    if center_idx is not None:
+        p_top, p_bot = points[center_idx[0]], points[center_idx[1]]
+        return (distance(p2, p6) + distance(p3, p5) + distance(p_top, p_bot)) / (3.0 * width)
     return (distance(p2, p6) + distance(p3, p5)) / (2.0 * width)
 
 
@@ -45,7 +55,7 @@ class FaceSignalExtractor:
     def __init__(
         self,
         ear_threshold: float = 0.21,
-        blink_min_frames: int = 2,
+        blink_min_frames: int = 1,
         blink_max_frames: int = 7,
         closed_frames: int = 8,
         smile_on: float = 0.43,
@@ -60,6 +70,8 @@ class FaceSignalExtractor:
         self.smile_off = smile_off
         self.use_corner_elevation = use_corner_elevation
         self.low_ear_frames = 0
+        self.blink_cooldown = 0
+        self.open_ear_baseline = 0.28
         self.smiling = False
         self.mesh = mp.solutions.face_mesh.FaceMesh(
             static_image_mode=False,
@@ -71,16 +83,28 @@ class FaceSignalExtractor:
 
     def reset(self) -> None:
         self.low_ear_frames = 0
+        self.blink_cooldown = 0
         self.smiling = False
 
     def close(self) -> None:
         self.mesh.close()
 
+    def calibrate(self, sample_smile_score: float, open_ear: float) -> Tuple[float, float, float]:
+        """
+        Calibrate both smile and EAR thresholds based on the user's neutral face and open eyes.
+        Sets smile_on to ~14% above neutral, smile_off to ~7% above neutral.
+        Sets ear_threshold to 75% of measured open-eye EAR.
+        """
+        self.smile_on = round(sample_smile_score * 1.14, 3)
+        self.smile_off = round(sample_smile_score * 1.07, 3)
+        self.open_ear_baseline = open_ear
+        self.ear_threshold = round(open_ear * 0.75, 3)
+        self.smiling = False
+        self.low_ear_frames = 0
+        return self.smile_on, self.smile_off, self.ear_threshold
+
     def calibrate_neutral_mouth(self, sample_score: float) -> Tuple[float, float]:
-        """
-        Calibrate smile thresholds based on the user's neutral resting face.
-        Sets smile_on to ~14% above neutral, and smile_off to ~7% above neutral.
-        """
+        """Backward-compatible helper to calibrate smile thresholds only."""
         self.smile_on = round(sample_score * 1.14, 3)
         self.smile_off = round(sample_score * 1.07, 3)
         self.smiling = False
@@ -108,16 +132,28 @@ class FaceSignalExtractor:
             dtype=np.float32,
         )
 
-        left_ear = eye_aspect_ratio(points, LEFT_EYE)
-        right_ear = eye_aspect_ratio(points, RIGHT_EYE)
+        left_ear = eye_aspect_ratio(points, LEFT_EYE, LEFT_EYE_CENTER)
+        right_ear = eye_aspect_ratio(points, RIGHT_EYE, RIGHT_EYE_CENTER)
         ear = 0.5 * (left_ear + right_ear)
+
+        # Smooth baseline when eyes are clearly open
+        if ear >= self.ear_threshold and self.low_ear_frames == 0:
+            self.open_ear_baseline = 0.95 * self.open_ear_baseline + 0.05 * ear
+
+        if self.blink_cooldown > 0:
+            self.blink_cooldown -= 1
 
         blink = False
         if ear < self.ear_threshold:
             self.low_ear_frames += 1
         else:
-            if self.blink_min_frames <= self.low_ear_frames <= self.blink_max_frames:
+            # Eyes transitioned back to open: check duration for valid blink
+            if (
+                self.blink_min_frames <= self.low_ear_frames <= self.blink_max_frames
+                and self.blink_cooldown == 0
+            ):
                 blink = True
+                self.blink_cooldown = 2  # Cooldown to avoid bounce false counts
             self.low_ear_frames = 0
 
         eyes_closed = self.low_ear_frames >= self.closed_frames

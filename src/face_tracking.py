@@ -294,7 +294,7 @@ def main():
     print(f"Target identity to lock: '{args.target}'")
     print(f"Enrolled identities in database: {enrolled_names if enrolled_names else '[None]'}")
     print("Controls:")
-    print("  'C' : Auto-calibrate smile threshold using your resting neutral face")
+    print("  'C' : Auto-calibrate smile & eye thresholds using your resting face")
     print("  'R' : Reset blink count to 0")
     print("  'Q' : Quit")
     print("-----------------------------------------------------------------")
@@ -335,6 +335,7 @@ def main():
 
     import time
     blink_total = 0
+    blink_flash_until = 0.0
     calib_text = ""
     calib_until = 0.0
     latest_face_state = None
@@ -378,6 +379,7 @@ def main():
                 if face_state is not None:
                     if face_state.blink:
                         blink_total += 1
+                        blink_flash_until = time.time() + 0.45
 
                     expression = "SMILE" if face_state.smiling else "NEUTRAL"
                     expr_color = (0, 255, 255) if face_state.smiling else (200, 200, 200)
@@ -386,6 +388,7 @@ def main():
 
                     # Display expression above target box
                     draw_label(view, expression, (x1, max(50, y1 - 48)), expr_color, 0.68, 2)
+
                     # Display eye state and accumulated blink count
                     draw_label(
                         view,
@@ -394,13 +397,18 @@ def main():
                         eye_color,
                         0.65,
                     )
+
+                    # Prominent visual blink indicator when blink event triggers
+                    if time.time() < blink_flash_until:
+                        draw_label(view, "BLINK!", (x1, y2 + 25), (0, 255, 0), 0.85, 2)
+
                     # Display numeric EAR and smile metrics at bottom left
                     draw_label(
                         view,
-                        f"EAR={face_state.ear:.3f} | smile={face_state.smile_score:.3f} [on:{signals.smile_on:.2f} off:{signals.smile_off:.2f}] ('C'=calib)",
+                        f"EAR={face_state.ear:.3f} (thresh={signals.ear_threshold:.3f}) | smile={face_state.smile_score:.3f} [on:{signals.smile_on:.2f} off:{signals.smile_off:.2f}] ('C'=calib)",
                         (12, view.shape[0] - 18),
                         (255, 255, 255),
-                        0.48,
+                        0.46,
                     )
                     # Display normalized error and direction labels
                     draw_label(
@@ -449,9 +457,9 @@ def main():
                 print("[Tracker] Reset blink count to 0.")
             elif key == ord("c"):
                 if latest_face_state is not None:
-                    on, off = signals.calibrate_neutral_mouth(latest_face_state.smile_score)
-                    calib_text = f"CALIBRATED: Neutral={latest_face_state.smile_score:.3f} -> smile_on={on:.2f}, smile_off={off:.2f}"
-                    calib_until = time.time() + 3.5
+                    on, off, ear_th = signals.calibrate(latest_face_state.smile_score, latest_face_state.ear)
+                    calib_text = f"CALIBRATED: Neutral={latest_face_state.smile_score:.3f} | Open EAR={latest_face_state.ear:.3f} (thresh={ear_th:.3f})"
+                    calib_until = time.time() + 4.0
                     print(f"[Tracker] {calib_text}")
                 else:
                     print("[Tracker] Cannot calibrate: target face not detected in frame.")
