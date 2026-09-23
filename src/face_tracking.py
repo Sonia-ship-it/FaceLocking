@@ -339,6 +339,10 @@ def main():
     calib_text = ""
     calib_until = 0.0
     latest_face_state = None
+    last_lock_state = None
+    last_eye_state = None
+    last_expression = None
+    last_telemetry_time = 0.0
     print("Camera initialized. Press 'Q' to quit.\n")
 
     try:
@@ -356,6 +360,11 @@ def main():
             state_color = (0, 220, 0) if is_locked else (0, 140, 255)
             draw_label(view, state_text, (12, 30), state_color, 0.75, 2)
 
+            # Log lock state transitions to console
+            if tracker.state != last_lock_state:
+                last_lock_state = tracker.state
+                print(f"[LOCK] State changed -> {tracker.state.name}: '{tracker.target_name}'")
+
             # Draw other visible faces (distractors / unverified faces)
             for f in all_faces:
                 fb = tracker.box(f)
@@ -366,6 +375,7 @@ def main():
                     draw_label(view, distractor_label, (f.x1, max(20, f.y1 - 6)), (140, 140, 140), 0.48, 1)
 
             latest_face_state = None
+            face_state = None
 
             # Locked target processing
             if is_locked and locked_face is not None:
@@ -380,11 +390,23 @@ def main():
                     if face_state.blink:
                         blink_total += 1
                         blink_flash_until = time.time() + 0.45
+                        print(f"[BLINK] >> Blink #{blink_total} detected! << (EAR: {face_state.ear:.3f})")
 
                     expression = "SMILE" if face_state.smiling else "NEUTRAL"
                     expr_color = (0, 255, 255) if face_state.smiling else (200, 200, 200)
+
+                    # Log expression changes to console
+                    if expression != last_expression:
+                        last_expression = expression
+                        print(f"[EXPRESSION] State changed -> {expression} (score={face_state.smile_score:.3f} | on={signals.smile_on:.2f}, off={signals.smile_off:.2f})")
+
                     eye_text = "EYES CLOSED" if face_state.eyes_closed else "EYES OPEN"
                     eye_color = (0, 0, 255) if face_state.eyes_closed else (0, 255, 0)
+
+                    # Log eye state changes to console
+                    if eye_text != last_eye_state:
+                        last_eye_state = eye_text
+                        print(f"[EYE] State changed -> {eye_text} (EAR={face_state.ear:.3f}, thresh={signals.ear_threshold:.3f})")
 
                     # Display expression above target box
                     draw_label(view, expression, (x1, max(50, y1 - 48)), expr_color, 0.68, 2)
@@ -422,6 +444,31 @@ def main():
                     signals.reset()
             else:
                 signals.reset()
+                last_eye_state = None
+                last_expression = None
+
+            # Periodic live console telemetry log (every 1.0 second)
+            now = time.time()
+            if now - last_telemetry_time >= 1.0:
+                last_telemetry_time = now
+                if is_locked and face_state is not None:
+                    print(
+                        f"[TELEMETRY] Locked: '{tracker.target_name}' | "
+                        f"Eyes: {eye_text} (EAR={face_state.ear:.3f}) | "
+                        f"Blinks: {blink_total} | "
+                        f"Expr: {expression} ({face_state.smile_score:.3f}) | "
+                        f"Pos: {position.horizontal}/{position.vertical} (err=[{position.error_x:+.2f}, {position.error_y:+.2f}])"
+                    )
+                elif tracker.state == LockState.SEARCHING:
+                    distractor_names = [
+                        tracker.identity(frame, f).name
+                        for f in all_faces
+                        if tracker.identity(frame, f).accepted
+                    ]
+                    faces_info = f"Visible enrolled: {distractor_names}" if distractor_names else f"Visible faces: {len(all_faces)}"
+                    print(f"[TELEMETRY] SEARCHING for '{tracker.target_name}'... ({faces_info})")
+                elif tracker.state == LockState.LOST:
+                    print(f"[TELEMETRY] Target '{tracker.target_name}' LOST (frames={tracker.lost_frames}/{tracker.lost_timeout})")
 
             # Center dead-zone visualization
             h, w = view.shape[:2]
