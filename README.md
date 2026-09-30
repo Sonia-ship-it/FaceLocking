@@ -39,3 +39,20 @@ python -m src.track_target --target TargetName --cam 2
 # IP / RTSP / HTTP Camera Stream
 python -m src.track_target --target TargetName --cam http://192.168.1.100:8080/video
 ```
+
+## Wireless Tachometer Stepper Tracking (MQTT + NodeMCU)
+
+Tracks an enrolled face horizontally across the frame and maps its position to a tachometer needle (0° to 180°):
+- **Model / Vision Client**: Uses ArcFace identity lock-in and 5-point landmark detection.
+- **MQTT Protocol**: Transmits raw angle degrees (`0` to `180`) via `paho-mqtt` ("peho") to Eclipse Mosquitto broker.
+- **Microcontroller**: NodeMCU ESP8266 subscribes over WiFi to `tachometer/angle` and drives a stepper motor needle via AccelStepper.
+
+### Run Tracker
+```bash
+python -m src.mqtt_tachometer_tracker --target Sonia
+```
+*(Options: `--broker localhost`, `--topic tachometer/angle`, `--invert`)*
+
+### Firmware
+Firmware file is located at [`firmware/nodemcu_stepper_tachometer/nodemcu_stepper_tachometer.ino`](file:///c:/Users/user/Videos/face-recognition-5pt/firmware/nodemcu_stepper_tachometer/nodemcu_stepper_tachometer.ino).
+
