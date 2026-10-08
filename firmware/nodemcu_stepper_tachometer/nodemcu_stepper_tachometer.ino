@@ -34,8 +34,8 @@
 const char* WIFI_SSID     = "Main Hall";
 const char* WIFI_PASSWORD = "Meeting@2024";
 
-// IP Address of PC running Mosquitto Broker (e.g. 10.12.72.167)
-const char* MQTT_BROKER   = "10.12.72.167";
+// IP Address of PC running Mosquitto Broker (Current PC IP: 10.12.74.235)
+const char* MQTT_BROKER   = "10.12.74.235";
 const int   MQTT_PORT     = 1883;
 
 // MQTT Topics
@@ -64,8 +64,8 @@ AccelStepper stepper(AccelStepper::HALF4WIRE, IN1, IN3, IN2, IN4);
 WiFiClient espClient;
 PubSubClient mqttClient(espClient);
 
-long targetStep = TOTAL_STEPS_180_DEG / 2; // Default to center (90 deg)
-int lastReceivedAngle = 90;
+long targetStep = 0; // Fixed home reference at 0 deg (0 steps)
+int lastReceivedAngle = 0;
 
 void setupWifi() {
   delay(10);
@@ -149,15 +149,10 @@ void setup() {
   stepper.setMaxSpeed(1200.0);       // Max steps per second
   stepper.setAcceleration(2500.0);   // Acceleration in steps/s^2
 
-  // Startup Calibration / Tachometer Needle Sweep:
-  // Sweep needle 0° -> 180° -> 90° (Center)
-  Serial.println("Calibrating needle sweep...");
-  stepper.setCurrentPosition(0); // Assume power-on needle is resting at 0 deg (or manual home)
-  stepper.runToNewPosition(TOTAL_STEPS_180_DEG);      // Sweep to 180 deg
-  delay(200);
-  stepper.runToNewPosition(TOTAL_STEPS_180_DEG / 2);  // Return to 90 deg center
-  delay(200);
-  Serial.println("Tachometer centered at 90°");
+  // Startup: Fix home reference point at 0° (0 steps)
+  stepper.setCurrentPosition(0); // Power-on fixed reference: 0° / 0 steps
+  stepper.moveTo(0);             // Hold at 0° until angle messages arrive
+  Serial.println("Fixed reference point established: 0° (0 steps)");
 
   // WiFi & MQTT Setup
   setupWifi();

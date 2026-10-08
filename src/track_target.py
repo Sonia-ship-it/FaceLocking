@@ -38,7 +38,7 @@ MATCH_THRESHOLD = 0.40
 DEFAULT_CAMERA_FOV = 65.0  # Typical USB webcam horizontal field of view in degrees
 
 
-def load_target_embedding(target_name: str) -> np.ndarray:
+def load_target_embedding(target_name: str) -> tuple[np.ndarray, str]:
     if not DB_JSON.exists() or not DB_NPZ.exists():
         raise RuntimeError(
             f"No database found. Run `python -m src.enroll --name {target_name}` first."
@@ -48,22 +48,35 @@ def load_target_embedding(target_name: str) -> np.ndarray:
         meta = json.load(f)
 
     npz = np.load(DB_NPZ)
+    names = meta.get("names", [])
+    files = list(npz.files)
 
+    name_map = {n.lower(): n for n in names}
+    file_map = {k.lower(): k for k in files if k != "embeddings"}
+    target_lower = target_name.strip().lower()
+
+    resolved_name = target_name
     if target_name in npz.files:
         emb = npz[target_name]
-    else:
-        names = meta.get("names", [])
-        if target_name not in names:
-            available = names if names else list(npz.files)
-            raise RuntimeError(
-                f"'{target_name}' not found in database. Available identities: {available}"
-            )
+    elif target_lower in file_map:
+        resolved_name = file_map[target_lower]
+        emb = npz[resolved_name]
+    elif target_lower in name_map:
+        resolved_name = name_map[target_lower]
+        idx = names.index(resolved_name)
+        emb = npz["embeddings"][idx]
+    elif target_name in names:
         idx = names.index(target_name)
         emb = npz["embeddings"][idx]
+    else:
+        available = names if names else files
+        raise RuntimeError(
+            f"'{target_name}' not found in database. Available identities: {available}"
+        )
 
     emb = np.asarray(emb, dtype=np.float32).reshape(-1)
     emb = emb / (np.linalg.norm(emb) + 1e-12)
-    return emb
+    return emb, resolved_name
 
 
 def cosine_distance(a: np.ndarray, b: np.ndarray) -> float:
@@ -81,7 +94,7 @@ def main(
     invert: bool = False,
     fov: float = DEFAULT_CAMERA_FOV,
 ):
-    target_emb = load_target_embedding(target_name)
+    target_emb, target_name = load_target_embedding(target_name)
     print(f"\n[Target Tracker] Loaded enrolled target: '{target_name}'")
 
     sock = None
