@@ -51,8 +51,17 @@ Tracks an enrolled face horizontally across the frame and maps its position to a
 ```bash
 python -m src.mqtt_tachometer_tracker --target Sonia
 ```
-*(Options: `--broker localhost`, `--topic tachometer/angle`, `--invert`)*
+*(Options: `--broker localhost`, `--topic tachometer/angle`, `--axis vertical|horizontal`, `--invert`, `--offset 0.0`)*
+
+### Hotkeys
+- `C` : Zero-calibrate needle to current head position
+- `[` / `]` : Nudge zero offset by -5° / +5°
+- `V` : Switch tracking axis (Vertical / Horizontal)
+- `I` : Invert direction
+- `0` : Home needle to 0°
+- `R` : Center needle to 90°
 
 ### Firmware
 Firmware file is located at [`firmware/nodemcu_stepper_tachometer/nodemcu_stepper_tachometer.ino`](file:///c:/Users/user/Videos/face-recognition-5pt/firmware/nodemcu_stepper_tachometer/nodemcu_stepper_tachometer.ino).
+
 
