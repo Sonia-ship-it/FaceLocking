@@ -1,0 +1,26 @@
+{
+  "evaluation_summary": {
+    "target_name": "Sonia",
+    "decay_half_life_sec": 2.5,
+    "decay_lambda": 0.2772588722239781,
+    "scenarios_evaluated": 3,
+    "results": {
+      "head_turn": {
+        "confirmed_before": true,
+        "temporary_during": true,
+        "confirmed_after": true,
+        "exponential_decay_r2": 0.9984011884801801,
+        "id_continuity_success": true
+      },
+      "occlusion": {
+        "mean_kalman_error_px": 0.00040181477864633194,
+        "recovery_success": true
+      },
+      "path_crossing": {
+        "id_swaps_detected": 0,
+        "swap_prevention_success": true
+      }
+    },
+    "overall_assessment": "PASS"
+  }
+}

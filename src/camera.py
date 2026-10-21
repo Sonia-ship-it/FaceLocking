@@ -142,7 +142,19 @@ def open_camera(
     cam_name = "Camera"
     target_source: Union[int, str] = 0
 
-    if cam_source is None or str(cam_source).lower() in ("auto", "external", "physical", "usb", "ext"):
+    s_lower = str(cam_source).lower() if cam_source is not None else "auto"
+
+    if s_lower in ("internal", "builtin", "laptop", "pc", "webcam", "integrated", "0"):
+        # Explicit internal laptop webcam requested
+        cams = list_available_cameras()
+        internal_cams = [c for c in cams if c.get("is_internal")]
+        if internal_cams:
+            target_source = int(internal_cams[0]["index"])
+            cam_name = str(internal_cams[0]["name"])
+        else:
+            target_source = 0
+            cam_name = "Internal PC Webcam (0)"
+    elif s_lower in ("auto", "external", "physical", "usb", "ext"):
         idx, name = get_physical_camera_index()
         target_source = idx
         cam_name = name
@@ -150,7 +162,6 @@ def open_camera(
         # Check if integer or numeric string
         try:
             target_source = int(cam_source)
-            # Find name if possible
             for c in list_available_cameras():
                 if c["index"] == target_source:
                     cam_name = str(c["name"])

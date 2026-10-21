@@ -64,4 +64,40 @@ python -m src.mqtt_tachometer_tracker --target Sonia
 ### Firmware
 Firmware file is located at [`firmware/nodemcu_stepper_tachometer/nodemcu_stepper_tachometer.ino`](file:///c:/Users/user/Videos/face-recognition-5pt/firmware/nodemcu_stepper_tachometer/nodemcu_stepper_tachometer.ino).
 
+## Whole-Person Tracking & Face-Association (Honest 3-State Model)
+
+Maintains temporal identity continuity across temporary facial loss through an **honest three-state model** with **exponential confidence decay**:
+- **CONFIRMED**: Person body is tracked and actively verified via ArcFace face embedding ($C \approx 0.70 - 1.0$).
+- **TEMPORARY**: Face is temporarily lost (e.g., head turn, looking away, momentary occlusion), but the whole-person body track continues to be observed via Kalman/Pose tracking. Confidence decays exponentially:
+  $$C(t) = C_0 \cdot \exp(-\lambda \Delta t) \quad \text{where} \quad \lambda = \frac{\ln 2}{t_{1/2}}$$
+  If the face reappears on this body before confidence falls below threshold, identity restores to **CONFIRMED** with zero identity switch.
+- **UNKNOWN**: Confidence has decayed below the confirmation threshold ($C < 0.35$), or the track never possessed a verified face.
+
+### Closed-Loop Target Centering Logic (Virtual PTZ Gimbal)
+Operates completely without physical hardware components:
+- Closed-loop software controller computes normalized pixel error $(e_x, e_y)$ relative to optical frame center.
+- Features deadband filtering ($r_{\text{dead}} = 0.06$) to eliminate jitter when target is centered.
+- Implements simulated 2-axis Pan-Tilt gimbal dynamics and renders a dynamic, zoomed Picture-in-Picture virtual camera viewport that smoothly tracks the target in software.
+
+### Run Live Webcam Tracker
+```bash
+python -m src.person_face_tracker --target Sonia
+```
+*(Options: `--cam auto` or `--cam 0`, `--decay-half-life 2.5`, `--match-thresh 0.40`)*
+
+**Interactive Hotkeys:**
+- `H` : Toggle simulated head turn (suppresses facial landmarks to test Temporary decay state)
+- `O` : Toggle simulated obstacle occluder (tests walking behind barriers)
+- `P` : Toggle Virtual PTZ zoomed software gimbal window
+- `T` : Cycle selected target track
+- `C` : Recenter virtual gimbal to 0°
+- `Q` / `ESC` : Quit session
+
+### Run Automated Scenario Evaluation Suite
+Evaluates Head Turns, Obstacle Occlusions, and Two-Person Path Crossings:
+```bash
+python -m src.evaluate_scenarios --target Sonia
+```
+Generates quantitative metrics in [`data/evaluation_metrics.json`](file:///c:/Users/user/Videos/face-recognition-5pt/data/evaluation_metrics.json) and publication-quality diagnostic plots in [`evaluation_results.png`](file:///c:/Users/user/Videos/face-recognition-5pt/evaluation_results.png).
+
 
