@@ -58,18 +58,24 @@ def draw_hud_banner(
     if lock_policy == LockPolicy.LOCK_UNKNOWN:
         mode_str = "Auto-Lock Unknown"
         if target is not None and target.state == TrackState.UNKNOWN:
-            status_text = "🚨 INTRUDER LOCKED"
+            status_text = f"🚨 LOCKED: [INTRUDER] #{target.track_id}"
             bg_col = (40, 40, 200)
+        elif target is not None and target.state == TrackState.CONFIRMED:
+            status_text = f"Authorized: [CONFIRMED] {target.identity} ({target.confidence * 100:.0f}%)"
+            bg_col = (30, 140, 70)
+        elif target is not None and target.state == TrackState.TEMPORARY:
+            status_text = f"Authorized: [TEMPORARY] {target.identity} ({target.confidence * 100:.0f}%)"
+            bg_col = (25, 120, 200)
         else:
             status_text = "Secure / Monitoring"
             bg_col = (28, 28, 32)
     elif lock_policy == LockPolicy.LOCK_KNOWN:
         mode_str = "Auto-Lock Known"
         if target is not None and target.state == TrackState.CONFIRMED:
-            status_text = f"Locked: {target.identity} ({target.confidence * 100:.0f}%)"
+            status_text = f"Locked: [CONFIRMED] {target.identity} ({target.confidence * 100:.0f}%)"
             bg_col = (30, 140, 70)
         elif target is not None and target.state == TrackState.TEMPORARY:
-            status_text = f"Tracking: {target.identity} [Face Lost]"
+            status_text = f"Locked: [TEMPORARY] {target.identity} ({target.confidence * 100:.0f}%)"
             bg_col = (25, 120, 200)
         else:
             status_text = "Searching..."
@@ -77,8 +83,15 @@ def draw_hud_banner(
     else:
         mode_str = "Manual"
         if target is not None:
-            status_text = f"Locked: {target.identity}"
-            bg_col = (30, 140, 70) if target.state == TrackState.CONFIRMED else (40, 40, 200)
+            if target.state == TrackState.CONFIRMED:
+                status_text = f"Locked: [CONFIRMED] {target.identity} ({target.confidence * 100:.0f}%)"
+                bg_col = (30, 140, 70)
+            elif target.state == TrackState.TEMPORARY:
+                status_text = f"Locked: [TEMPORARY] {target.identity} ({target.confidence * 100:.0f}%)"
+                bg_col = (25, 120, 200)
+            else:
+                status_text = f"Locked: [INTRUDER] #{target.track_id}"
+                bg_col = (40, 40, 200)
         else:
             status_text = "No Target"
             bg_col = (28, 28, 32)
@@ -129,16 +142,16 @@ def draw_track_visuals(frame: np.ndarray, track: TrackedPerson, is_selected: boo
     # Clean focused rectangle
     cv2.rectangle(frame, (x1, y1), (x2, y2), col, border_thick)
 
-    # Concise, clean label
+    # Consistent, clean labels for CONFIRMED, TEMPORARY, and INTRUDER
+    conf_pct = f"{track.confidence * 100:.0f}%"
     if track.state == TrackState.CONFIRMED:
-        label = f"{track.identity} ({track.confidence * 100:.0f}%)"
+        tag = f"[CONFIRMED] {track.identity} ({conf_pct})"
     elif track.state == TrackState.TEMPORARY:
-        label = f"{track.identity} [Face Lost]"
+        tag = f"[TEMPORARY] {track.identity} ({conf_pct})"
     else:
-        label = "🚨 Unknown" if (is_selected and lock_policy == LockPolicy.LOCK_UNKNOWN) else "Unknown"
+        tag = f"[INTRUDER] #{track.track_id}"
 
-    if is_selected:
-        label = f"LOCKED: {label}"
+    label = f"LOCKED: {tag}" if is_selected else tag
 
     (lw, lh), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.46, 1)
     label_y1 = max(0, y1 - lh - 8)
