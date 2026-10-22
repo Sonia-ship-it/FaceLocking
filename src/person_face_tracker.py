@@ -46,189 +46,104 @@ COLOR_ALERT = (0, 0, 255)            # Bright Red
 def draw_hud_banner(
     frame: np.ndarray,
     target: Optional[TrackedPerson],
-    centering: CenteringSignal,
     fps: float,
     lock_policy: LockPolicy,
-    head_turn_sim: bool,
-    occlusion_sim: bool,
-    show_ptz: bool,
+    head_turn_sim: bool = False,
+    occlusion_sim: bool = False,
 ):
     """
-    Renders an intelligent floating telemetry HUD showing locking policy,
-    intrusion alerts, appearance ReID matching, and gimbal tracking.
+    Renders a clean, minimal status badge in the top-left corner showing
+    only the essential lock policy and active target status.
     """
-    h, w = frame.shape[:2]
-
-    # Top floating telemetry card
-    card_h = 62
-    card_w = min(w - 20, 960)
-    card_x = 10
-    card_y = 8
-
-    card_roi = frame[card_y:card_y + card_h, card_x:card_x + card_w]
-    overlay = card_roi.copy()
-    cv2.rectangle(overlay, (0, 0), (card_w, card_h), COLOR_HUD_BG, -1)
-    cv2.addWeighted(overlay, 0.72, card_roi, 0.28, 0, card_roi)
-    cv2.rectangle(frame, (card_x, card_y), (card_x + card_w, card_y + card_h), (70, 75, 85), 1)
-
-    # Policy badge text
     if lock_policy == LockPolicy.LOCK_UNKNOWN:
-        policy_label = "FACILITY SECURITY [LOCK UNKNOWN INTRUDER]"
-        policy_col = (50, 100, 255)
-    elif lock_policy == LockPolicy.LOCK_KNOWN:
-        policy_label = "AUTHORIZED FOLLOW [LOCK KNOWN MEMBER]"
-        policy_col = (0, 220, 150)
-    else:
-        policy_label = "MANUAL LOCK MODE [OPERATOR DIRECTED]"
-        policy_col = (200, 200, 200)
-
-    cv2.putText(frame, f"POLICY: {policy_label}", (card_x + 12, card_y + 18),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.44, policy_col, 1, cv2.LINE_AA)
-    cv2.putText(frame, f"CPU FPS: {fps:.1f}", (card_x + card_w - 110, card_y + 18),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.44, (0, 255, 200), 1, cv2.LINE_AA)
-
-    # Target info line & intrusion warnings
-    if target is not None:
-        if target.state == TrackState.UNKNOWN:
-            state_col = COLOR_UNKNOWN
-            badge_text = "[INTRUDER / UNKNOWN]"
-        elif target.state == TrackState.TEMPORARY:
-            state_col = COLOR_TEMPORARY
-            badge_text = "[TEMPORARY]"
+        mode_str = "Auto-Lock Unknown"
+        if target is not None and target.state == TrackState.UNKNOWN:
+            status_text = "🚨 INTRUDER LOCKED"
+            bg_col = (40, 40, 200)
         else:
-            state_col = COLOR_CONFIRMED
-            badge_text = "[CONFIRMED]"
-
-        cv2.putText(frame, badge_text, (card_x + 12, card_y + 44), cv2.FONT_HERSHEY_SIMPLEX, 0.52, state_col, 2, cv2.LINE_AA)
-
-        target_info = f"ID: {target.identity} #{target.track_id} | Conf: {target.confidence * 100:.1f}%"
-        cv2.putText(frame, target_info, (card_x + 175, card_y + 44), cv2.FONT_HERSHEY_SIMPLEX, 0.46, (230, 230, 230), 1, cv2.LINE_AA)
-
-        # Confidence Decay Bar
-        bar_x = card_x + 420
-        bar_y = card_y + 32
-        bar_w = 100
-        bar_h = 12
-        cv2.rectangle(frame, (bar_x, bar_y), (bar_x + bar_w, bar_y + bar_h), (45, 45, 50), -1)
-        fill_w = int(bar_w * max(0.0, min(1.0, target.confidence)))
-        cv2.rectangle(frame, (bar_x, bar_y), (bar_x + fill_w, bar_y + bar_h), state_col, -1)
-        cv2.rectangle(frame, (bar_x, bar_y), (bar_x + bar_w, bar_y + bar_h), (110, 110, 120), 1)
-
-        # Appearance ReID tag or Facial loss timer
-        if target.is_facing_away:
-            cv2.putText(frame, f"[BACK TURNED // Appearance ReID: {target.appearance_similarity * 100:.0f}%]",
-                        (bar_x + bar_w + 10, card_y + 43), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0, 220, 255), 1, cv2.LINE_AA)
-        elif target.state == TrackState.TEMPORARY and target.last_face_seen_time:
-            dt_loss = time.time() - target.last_face_seen_time
-            cv2.putText(frame, f"Face Lost: {dt_loss:.1f}s", (bar_x + bar_w + 10, card_y + 43),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.42, COLOR_TEMPORARY, 1, cv2.LINE_AA)
-        elif target.state == TrackState.UNKNOWN and lock_policy == LockPolicy.LOCK_UNKNOWN:
-            cv2.putText(frame, "🚨 INTRUDER AUTO-LOCKED", (bar_x + bar_w + 10, card_y + 43),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.44, (50, 50, 255), 2, cv2.LINE_AA)
-
+            status_text = "Secure / Monitoring"
+            bg_col = (28, 28, 32)
+    elif lock_policy == LockPolicy.LOCK_KNOWN:
+        mode_str = "Auto-Lock Known"
+        if target is not None and target.state == TrackState.CONFIRMED:
+            status_text = f"Locked: {target.identity} ({target.confidence * 100:.0f}%)"
+            bg_col = (30, 140, 70)
+        elif target is not None and target.state == TrackState.TEMPORARY:
+            status_text = f"Tracking: {target.identity} [Face Lost]"
+            bg_col = (25, 120, 200)
+        else:
+            status_text = "Searching..."
+            bg_col = (28, 28, 32)
     else:
-        status_msg = "FACILITY SECURE // SCANNING FOR UNKNOWN INTRUDERS..." if lock_policy == LockPolicy.LOCK_UNKNOWN else "SEARCHING FOR REGISTERED PERSONNEL..."
-        cv2.putText(frame, status_msg, (card_x + 12, card_y + 44),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.46, (160, 160, 160), 1, cv2.LINE_AA)
+        mode_str = "Manual"
+        if target is not None:
+            status_text = f"Locked: {target.identity}"
+            bg_col = (30, 140, 70) if target.state == TrackState.CONFIRMED else (40, 40, 200)
+        else:
+            status_text = "No Target"
+            bg_col = (28, 28, 32)
 
-    # Sleek bottom floating pill for Gimbal & scenarios status
-    pill_h = 28
-    pill_w = min(w - 20, 920)
-    pill_x = 10
-    pill_y = h - pill_h - 10
-
-    pill_roi = frame[pill_y:pill_y + pill_h, pill_x:pill_x + pill_w]
-    overlay_bot = pill_roi.copy()
-    cv2.rectangle(overlay_bot, (0, 0), (pill_w, pill_h), COLOR_HUD_BG, -1)
-    cv2.addWeighted(overlay_bot, 0.72, pill_roi, 0.28, 0, pill_roi)
-    cv2.rectangle(frame, (pill_x, pill_y), (pill_x + pill_w, pill_y + pill_h), (70, 75, 85), 1)
-
-    deadband_status = "CENTERED" if centering.in_deadband else "ADJUSTING"
-    ptz_str = (
-        f"GIMBAL: Pan {centering.pan_angle_deg:+.1f} deg | Tilt {centering.tilt_angle_deg:+.1f} deg | "
-        f"Err ({centering.norm_error_x:+.2f}, {centering.norm_error_y:+.2f}) [{deadband_status}] | Policy Key: [M]"
-    )
-    cv2.putText(frame, ptz_str, (pill_x + 10, pill_y + 18), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (200, 235, 255), 1, cv2.LINE_AA)
-
-    indicators = []
+    sim_tag = ""
     if head_turn_sim:
-        indicators.append("[H: TURN ACTIVE]")
+        sim_tag += " [Turn Sim]"
     if occlusion_sim:
-        indicators.append("[O: OCCLUDED]")
-    if show_ptz:
-        indicators.append("[P: PTZ]")
+        sim_tag += " [Occl Sim]"
 
-    if indicators:
-        tag_str = " ".join(indicators)
-        cv2.putText(frame, tag_str, (pill_x + pill_w - 230, pill_y + 18), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0, 220, 255), 1, cv2.LINE_AA)
+    info_str = f"[{mode_str}]  {status_text}  |  {fps:.0f} FPS{sim_tag}"
 
+    (tw, th), _ = cv2.getTextSize(info_str, cv2.FONT_HERSHEY_SIMPLEX, 0.48, 1)
+    px, py = 12, 12
+    badge_w, badge_h = tw + 20, th + 14
 
-def draw_centering_reticle(
-    frame: np.ndarray,
-    target_pt: Optional[Tuple[float, float]],
-    centering: CenteringSignal,
-):
-    h, w = frame.shape[:2]
-    cx, cy = w // 2, h // 2
-
-    # Optical center deadband box
-    db_w = int(w * 0.06)
-    db_h = int(h * 0.06)
-    cv2.rectangle(frame, (cx - db_w, cy - db_h), (cx + db_w, cy + db_h), (80, 80, 90), 1)
-    cv2.line(frame, (cx - 10, cy), (cx + 10, cy), (120, 120, 140), 1)
-    cv2.line(frame, (cx, cy - 10), (cx, cy + 10), (120, 120, 140), 1)
-
-    if target_pt is not None:
-        tx, ty = int(target_pt[0]), int(target_pt[1])
-
-        vector_col = (0, 255, 200) if centering.in_deadband else (0, 150, 255)
-        cv2.arrowedLine(frame, (cx, cy), (tx, ty), vector_col, 2, tipLength=0.18)
-
-        # Target reticle
-        cv2.circle(frame, (tx, ty), 16, COLOR_RETICLE, 2)
-        cv2.circle(frame, (tx, ty), 4, COLOR_RETICLE, -1)
-        cv2.line(frame, (tx - 24, ty), (tx + 24, ty), COLOR_RETICLE, 1)
-        cv2.line(frame, (tx, ty - 24), (tx, ty + 24), COLOR_RETICLE, 1)
+    # Subtle rounded/translucent background
+    roi = frame[py:py + badge_h, px:px + badge_w]
+    overlay = roi.copy()
+    cv2.rectangle(overlay, (0, 0), (badge_w, badge_h), bg_col, -1)
+    cv2.addWeighted(overlay, 0.78, roi, 0.22, 0, roi)
+    cv2.rectangle(frame, (px, py), (px + badge_w, py + badge_h), (75, 80, 90), 1)
+    cv2.putText(frame, info_str, (px + 10, py + th + 4), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (255, 255, 255), 1, cv2.LINE_AA)
 
 
-def draw_track_visuals(frame: np.ndarray, track: TrackedPerson, is_selected: bool):
-    bx1, by1, bx2, by2 = track.body_box
-
+def draw_track_visuals(frame: np.ndarray, track: TrackedPerson, is_selected: bool, lock_policy: LockPolicy = LockPolicy.LOCK_UNKNOWN):
+    """
+    Renders clean, focused bounding box and minimal label on the target person.
+    Focuses cleanly on the face when visible; seamlessly falls back to the body box
+    when the person turns away or is partially occluded.
+    """
     if track.state == TrackState.CONFIRMED:
         col = COLOR_CONFIRMED
-        border_thick = 3 if is_selected else 2
+        border_thick = 2
     elif track.state == TrackState.TEMPORARY:
         col = COLOR_TEMPORARY
-        border_thick = 3 if is_selected else 2
+        border_thick = 2
     else:
         col = COLOR_UNKNOWN
-        border_thick = 3 if is_selected else 1
+        border_thick = 2
 
-    # Body Box
-    cv2.rectangle(frame, (bx1, by1), (bx2, by2), col, border_thick)
-
-    # Face Box (if visible)
+    # Focus bounding box on the face when visible; use body box when face is turned
     if track.current_face_box is not None:
-        fx1, fy1, fx2, fy2 = track.current_face_box
-        cv2.rectangle(frame, (fx1, fy1), (fx2, fy2), (0, 255, 255), 2)
-        cv2.line(frame, (int((fx1 + fx2) / 2), fy2), (int((bx1 + bx2) / 2), by1), (0, 255, 255), 1)
-
-    # Label text
-    if track.is_facing_away:
-        label = f"{track.identity} #{track.track_id} [BACK TURNED (ReID {track.appearance_similarity * 100:.0f}%)]"
+        x1, y1, x2, y2 = track.current_face_box
     else:
-        state_tag = "INTRUDER" if track.state == TrackState.UNKNOWN else track.state.value.upper()
-        label = f"{track.identity} #{track.track_id} [{state_tag}] {track.confidence * 100:.0f}%"
+        x1, y1, x2, y2 = track.body_box
+
+    # Clean focused rectangle
+    cv2.rectangle(frame, (x1, y1), (x2, y2), col, border_thick)
+
+    # Concise, clean label
+    if track.state == TrackState.CONFIRMED:
+        label = f"{track.identity} ({track.confidence * 100:.0f}%)"
+    elif track.state == TrackState.TEMPORARY:
+        label = f"{track.identity} [Face Lost]"
+    else:
+        label = "🚨 Unknown" if (is_selected and lock_policy == LockPolicy.LOCK_UNKNOWN) else "Unknown"
+
+    if is_selected:
+        label = f"LOCKED: {label}"
 
     (lw, lh), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.46, 1)
-    label_y1 = max(0, by1 - lh - 8)
-    cv2.rectangle(frame, (bx1, label_y1), (bx1 + lw + 8, by1), col, -1)
-    cv2.putText(frame, label, (bx1 + 4, by1 - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.46, (255, 255, 255), 1, cv2.LINE_AA)
-
-    # Motion Trajectory tail
-    if len(track.kalman.history) > 1:
-        pts = np.array(track.kalman.history, dtype=np.int32).reshape((-1, 1, 2))
-        cv2.polylines(frame, [pts], isClosed=False, color=col, thickness=2)
+    label_y1 = max(0, y1 - lh - 8)
+    cv2.rectangle(frame, (x1, label_y1), (x1 + lw + 8, y1), col, -1)
+    cv2.putText(frame, label, (x1 + 4, y1 - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.46, (255, 255, 255), 1, cv2.LINE_AA)
 
 
 def main():
@@ -304,7 +219,7 @@ def main():
 
     sim_head_turn = False
     sim_occlusion = False
-    show_ptz_view = True
+    show_ptz_view = False
     show_hud = True
     is_fullscreen = False
 
@@ -344,21 +259,18 @@ def main():
             target = tracker.get_selected_target()
             target_pt = target.upper_center if target is not None else None
 
-            # Update Virtual PTZ Centering Controller
+            # Update Virtual PTZ Centering Controller (computes pan/tilt internally)
             centering = ptz_controller.update(
                 target_pt=target_pt,
                 frame_shape=(h, w),
                 current_time=t0,
             )
 
-            # Draw visual tracking annotations
+            # Draw visual tracking annotations ONLY on the target person
             display_frame = frame.copy()
 
-            for t in tracks:
-                is_selected = (target is not None and t.track_id == target.track_id)
-                draw_track_visuals(display_frame, t, is_selected)
-
-            draw_centering_reticle(display_frame, target_pt, centering)
+            if target is not None:
+                draw_track_visuals(display_frame, target, is_selected=True, lock_policy=tracker.lock_policy)
 
             if occlusion_box is not None:
                 ox1, oy1, ox2, oy2 = occlusion_box
@@ -370,12 +282,10 @@ def main():
                 draw_hud_banner(
                     frame=display_frame,
                     target=target,
-                    centering=centering,
                     fps=fps,
                     lock_policy=tracker.lock_policy,
                     head_turn_sim=sim_head_turn,
                     occlusion_sim=sim_occlusion,
-                    show_ptz=show_ptz_view,
                 )
 
             # Virtual PTZ Viewport in top right
