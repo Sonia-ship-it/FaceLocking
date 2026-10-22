@@ -48,17 +48,21 @@ def draw_hud_banner(
     target: Optional[TrackedPerson],
     fps: float,
     lock_policy: LockPolicy,
+    strangers_count: int = 0,
     head_turn_sim: bool = False,
     occlusion_sim: bool = False,
 ):
     """
     Renders a clean, minimal status badge in the top-left corner showing
-    only the essential lock policy and active target status.
+    the lock policy, active target status, and alerts for any unknown strangers.
     """
     if lock_policy == LockPolicy.LOCK_UNKNOWN:
         mode_str = "Auto-Lock Unknown"
-        if target is not None and target.state == TrackState.UNKNOWN:
-            status_text = f"🚨 LOCKED: [INTRUDER] #{target.track_id}"
+        if target is not None and (target.state == TrackState.UNKNOWN or target.identity == "Unknown"):
+            status_text = f"🚨 LOCKED: [STRANGER / UNKNOWN] #{target.track_id}"
+            bg_col = (40, 40, 200)
+        elif strangers_count > 0:
+            status_text = f"🚨 {strangers_count} STRANGER(S) DETECTED"
             bg_col = (40, 40, 200)
         elif target is not None and target.state == TrackState.CONFIRMED:
             status_text = f"Authorized: [CONFIRMED] {target.identity} ({target.confidence * 100:.0f}%)"
@@ -80,6 +84,11 @@ def draw_hud_banner(
         else:
             status_text = "Searching..."
             bg_col = (28, 28, 32)
+
+        # Notice any unknown stranger even while following known personnel
+        if strangers_count > 0:
+            status_text += f" | 🚨 {strangers_count} STRANGER UNKNOWN"
+            bg_col = (40, 40, 200)
     else:
         mode_str = "Manual"
         if target is not None:
@@ -90,11 +99,15 @@ def draw_hud_banner(
                 status_text = f"Locked: [TEMPORARY] {target.identity} ({target.confidence * 100:.0f}%)"
                 bg_col = (25, 120, 200)
             else:
-                status_text = f"Locked: [INTRUDER] #{target.track_id}"
+                status_text = f"Locked: [STRANGER / UNKNOWN] #{target.track_id}"
                 bg_col = (40, 40, 200)
         else:
             status_text = "No Target"
             bg_col = (28, 28, 32)
+
+        if strangers_count > 0 and (target is None or target.state != TrackState.UNKNOWN):
+            status_text += f" | 🚨 {strangers_count} STRANGER"
+            bg_col = (40, 40, 200)
 
     sim_tag = ""
     if head_turn_sim:
@@ -119,7 +132,7 @@ def draw_hud_banner(
 
 def draw_track_visuals(frame: np.ndarray, track: TrackedPerson, is_selected: bool, lock_policy: LockPolicy = LockPolicy.LOCK_UNKNOWN):
     """
-    Renders clean, focused bounding box and minimal label on the target person.
+    Renders clean, focused bounding box and minimal label on the target person or stranger.
     Focuses cleanly on the face when visible; seamlessly falls back to the body box
     when the person turns away or is partially occluded.
     """
@@ -142,14 +155,14 @@ def draw_track_visuals(frame: np.ndarray, track: TrackedPerson, is_selected: boo
     # Clean focused rectangle
     cv2.rectangle(frame, (x1, y1), (x2, y2), col, border_thick)
 
-    # Consistent, clean labels for CONFIRMED, TEMPORARY, and INTRUDER
+    # Consistent, clean labels for CONFIRMED, TEMPORARY, and STRANGER / UNKNOWN
     conf_pct = f"{track.confidence * 100:.0f}%"
     if track.state == TrackState.CONFIRMED:
         tag = f"[CONFIRMED] {track.identity} ({conf_pct})"
     elif track.state == TrackState.TEMPORARY:
         tag = f"[TEMPORARY] {track.identity} ({conf_pct})"
     else:
-        tag = f"[INTRUDER] #{track.track_id}"
+        tag = f"[STRANGER / UNKNOWN] #{track.track_id}"
 
     label = f"LOCKED: {tag}" if is_selected else tag
 
@@ -279,11 +292,21 @@ def main():
                 current_time=t0,
             )
 
-            # Draw visual tracking annotations ONLY on the target person
+            # Draw visual tracking annotations:
+            # 1. Target person (if locked)
+            # 2. Always notice any stranger / unknown person
             display_frame = frame.copy()
 
             if target is not None:
                 draw_track_visuals(display_frame, target, is_selected=True, lock_policy=tracker.lock_policy)
+
+            # Notice any unknown stranger entering the facility
+            for t in tracks:
+                if t.state == TrackState.UNKNOWN or t.identity == "Unknown":
+                    if target is None or t.track_id != target.track_id:
+                        draw_track_visuals(display_frame, t, is_selected=False, lock_policy=tracker.lock_policy)
+
+            strangers_count = sum(1 for t in tracks if t.state == TrackState.UNKNOWN or t.identity == "Unknown")
 
             if occlusion_box is not None:
                 ox1, oy1, ox2, oy2 = occlusion_box
@@ -297,6 +320,7 @@ def main():
                     target=target,
                     fps=fps,
                     lock_policy=tracker.lock_policy,
+                    strangers_count=strangers_count,
                     head_turn_sim=sim_head_turn,
                     occlusion_sim=sim_occlusion,
                 )
