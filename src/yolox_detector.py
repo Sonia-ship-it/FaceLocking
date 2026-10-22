@@ -24,7 +24,7 @@ class YOLOXPersonDetector:
     def __init__(
         self,
         model_path: str | Path = DEFAULT_YOLOX_PATH,
-        conf_thresh: float = 0.45,
+        conf_thresh: float = 0.35,
         nms_thresh: float = 0.45,
         input_size: Tuple[int, int] = (416, 416),
     ):

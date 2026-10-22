@@ -404,7 +404,7 @@ class PersonDetector:
     for robust whole-body detection and tracking across all camera angles and back-turns.
     """
 
-    def __init__(self, min_confidence: float = 0.45):
+    def __init__(self, min_confidence: float = 0.30):
         self.min_confidence = min_confidence
 
         # 1. YOLOX Deep Learning Person Detector
@@ -428,6 +428,7 @@ class PersonDetector:
         self,
         frame: np.ndarray,
         detected_faces: Optional[List[FaceBox5pt]] = None,
+        active_tracks: Optional[List[TrackedPerson]] = None,
     ) -> List[PersonDetection]:
         h, w = frame.shape[:2]
         persons: List[PersonDetection] = []
@@ -519,6 +520,22 @@ class PersonDetector:
 
                 if not covered:
                     persons.append(PersonDetection(proj_x1, proj_y1, proj_x2, proj_y2, confidence=0.75, source="projected"))
+
+        # 4. Active Track Body Continuity (ensures known persons maintain body bounding boxes when turning back)
+        if active_tracks:
+            for track in active_tracks:
+                tx1, ty1, tx2, ty2 = track.body_box
+                covered = False
+                for existing in persons:
+                    ix1, iy1 = max(tx1, existing.x1), max(ty1, existing.y1)
+                    ix2, iy2 = min(tx2, existing.x2), min(ty2, existing.y2)
+                    inter = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
+                    union = ((tx2 - tx1) * (ty2 - ty1)) + (existing.width * existing.height) - inter
+                    if inter / max(1.0, union) > 0.30:
+                        covered = True
+                        break
+                if not covered and track.identity != "Unknown":
+                    persons.append(PersonDetection(float(tx1), float(ty1), float(tx2), float(ty2), confidence=0.85, source="track_continuity"))
 
         return persons
 
@@ -618,8 +635,8 @@ class WholePersonFaceTracker:
                     filtered_faces.append(f)
             detected_faces = filtered_faces
 
-        # 3. Whole-Person Detection (YOLOX + Pose)
-        body_detections = self.person_detector.detect(proc_frame, detected_faces)
+        # 3. Whole-Person Detection (YOLOX + Pose + Active Track Continuity)
+        body_detections = self.person_detector.detect(proc_frame, detected_faces, active_tracks=self.tracks)
 
         # Extract Torso Clothing Appearance Signatures for each detection
         for det in body_detections:
@@ -640,7 +657,7 @@ class WholePersonFaceTracker:
 
                     # Combined affinity score (Motion + Torso Clothing Appearance)
                     if track.clothing_signature is not None and det.appearance_sig is not None:
-                        combined_affinity = 0.60 * iou_val + 0.40 * app_sim
+                        combined_affinity = 0.50 * iou_val + 0.50 * app_sim
                     else:
                         combined_affinity = iou_val
 
@@ -649,7 +666,7 @@ class WholePersonFaceTracker:
             t_rows, d_cols = linear_sum_assignment(cost_matrix)
 
             for r, c in zip(t_rows, d_cols):
-                if cost_matrix[r, c] < self.max_iou_distance:
+                if cost_matrix[r, c] < 0.78:
                     det = body_detections[c]
                     track = self.tracks[r]
 
@@ -672,6 +689,14 @@ class WholePersonFaceTracker:
         # Create new tracks for unmatched detections
         for d_idx, det in enumerate(body_detections):
             if d_idx not in matched_det_indices:
+                # Do NOT spawn a new track if this detection spatially overlaps with any existing track
+                overlaps_existing = any(
+                    self.box_iou(t.body_box, (det.x1, det.y1, det.x2, det.y2)) > 0.15
+                    for t in self.tracks
+                )
+                if overlaps_existing:
+                    continue
+
                 new_kt = KalmanBoxTracker((det.x1, det.y1, det.x2, det.y2))
                 new_track = TrackedPerson(
                     track_id=new_kt.id,
@@ -719,6 +744,10 @@ class WholePersonFaceTracker:
                 if target_track.state == TrackState.UNKNOWN:
                     target_track.identity = "Unknown"
                     target_track.confidence = 0.25
+                elif target_track.state in (TrackState.CONFIRMED, TrackState.TEMPORARY):
+                    # Face is unconfirmed (e.g. turned away / profile / motion blur):
+                    # Maintain identity in TEMPORARY state with smooth confidence decay
+                    target_track.update_without_face(current_time, appearance_match=target_track.appearance_similarity)
 
         # 6. Apply Appearance-Aware Three-State Decay for Tracks without Faces (Back Turned)
         for track in self.tracks:
@@ -748,8 +777,8 @@ class WholePersonFaceTracker:
             return
 
         if self.lock_policy == LockPolicy.LOCK_UNKNOWN:
-            # Look for an unknown/unauthorized track
-            unknown_tracks = [t for t in self.tracks if t.state == TrackState.UNKNOWN or t.identity == "Unknown"]
+            # Look for an unauthorized stranger / intruder (identity is "Unknown")
+            unknown_tracks = [t for t in self.tracks if t.identity == "Unknown"]
             if unknown_tracks:
                 # If currently locked track is an active unknown intruder, maintain lock
                 if self.selected_target_id in [t.track_id for t in unknown_tracks]:
@@ -768,12 +797,12 @@ class WholePersonFaceTracker:
             if self.target_name:
                 target_lower = self.target_name.strip().lower()
                 for t in self.tracks:
-                    if t.identity.strip().lower() == target_lower and t.state != TrackState.UNKNOWN:
+                    if t.identity.strip().lower() == target_lower:
                         self.selected_target_id = t.track_id
                         return
 
             # Any enrolled member who is CONFIRMED or TEMPORARY
-            known_tracks = [t for t in self.tracks if t.state != TrackState.UNKNOWN and t.identity != "Unknown"]
+            known_tracks = [t for t in self.tracks if t.identity != "Unknown"]
             if known_tracks:
                 if self.selected_target_id in [t.track_id for t in known_tracks]:
                     return

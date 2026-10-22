@@ -58,7 +58,7 @@ def draw_hud_banner(
     """
     if lock_policy == LockPolicy.LOCK_UNKNOWN:
         mode_str = "Auto-Lock Unknown"
-        if target is not None and (target.state == TrackState.UNKNOWN or target.identity == "Unknown"):
+        if target is not None and target.identity == "Unknown":
             status_text = f"🚨 LOCKED: [STRANGER / UNKNOWN] #{target.track_id}"
             bg_col = (40, 40, 200)
         elif strangers_count > 0:
@@ -67,7 +67,7 @@ def draw_hud_banner(
         elif target is not None and target.state == TrackState.CONFIRMED:
             status_text = f"Authorized: [CONFIRMED] {target.identity} ({target.confidence * 100:.0f}%)"
             bg_col = (30, 140, 70)
-        elif target is not None and target.state == TrackState.TEMPORARY:
+        elif target is not None and (target.state == TrackState.TEMPORARY or target.identity != "Unknown"):
             status_text = f"Authorized: [TEMPORARY] {target.identity} ({target.confidence * 100:.0f}%)"
             bg_col = (25, 120, 200)
         else:
@@ -159,7 +159,7 @@ def draw_track_visuals(frame: np.ndarray, track: TrackedPerson, is_selected: boo
     conf_pct = f"{track.confidence * 100:.0f}%"
     if track.state == TrackState.CONFIRMED:
         tag = f"[CONFIRMED] {track.identity} ({conf_pct})"
-    elif track.state == TrackState.TEMPORARY:
+    elif track.state == TrackState.TEMPORARY or track.identity != "Unknown":
         tag = f"[TEMPORARY] {track.identity} ({conf_pct})"
     else:
         tag = f"[STRANGER / UNKNOWN] #{track.track_id}"
@@ -302,11 +302,11 @@ def main():
 
             # Notice any unknown stranger entering the facility
             for t in tracks:
-                if t.state == TrackState.UNKNOWN or t.identity == "Unknown":
+                if t.identity == "Unknown":
                     if target is None or t.track_id != target.track_id:
                         draw_track_visuals(display_frame, t, is_selected=False, lock_policy=tracker.lock_policy)
 
-            strangers_count = sum(1 for t in tracks if t.state == TrackState.UNKNOWN or t.identity == "Unknown")
+            strangers_count = sum(1 for t in tracks if t.identity == "Unknown")
 
             if occlusion_box is not None:
                 ox1, oy1, ox2, oy2 = occlusion_box
