@@ -1,10 +1,17 @@
 # src/person_face_tracker.py
 """
 Whole-Person Tracking & Face-Association Interactive Live System.
-Maintains temporal identity continuity across temporary facial loss through an honest
-three-state model (Confirmed, Temporary, Unknown) with exponential confidence decay.
-Includes closed-loop target centering logic and virtual PTZ gimbal simulation without hardware.
-Optimized for computer webcams with full-height framing, scalable window, and hotkey controls.
+Integrates:
+  - Face Detection: Modern Deep Learning YuNet (OpenCV FaceDetectorYN)
+  - Person Detection: YOLOX-Nano ONNX + MediaPipe Pose
+  - Face Recognition: ArcFace 512-D ONNX Embeddings
+  - Appearance Re-Identification: Torso Clothing Color Signature (Tracks across back-turns)
+  - Honest Three-State Model: Confirmed, Temporary, Unknown with exponential decay
+  - Robotic Automatic Locking:
+      * Lock by Unknown: Facility security mode (auto-locks onto unauthorized strangers / intruders)
+      * Lock by Known: VIP / authorized personnel follow mode (auto-locks onto enrolled members)
+      * Manual Lock: Operator-directed
+  - Closed-Loop Virtual PTZ Software Gimbal (No physical hardware required)
 """
 from __future__ import annotations
 
@@ -21,6 +28,7 @@ from src.person_tracker import (
     WholePersonFaceTracker,
     TrackedPerson,
     TrackState,
+    LockPolicy,
 )
 from src.target_centering import VirtualPTZController, CenteringSignal
 
@@ -28,10 +36,11 @@ from src.target_centering import VirtualPTZController, CenteringSignal
 # Modern color palette (BGR)
 COLOR_CONFIRMED = (46, 204, 113)     # Emerald Green
 COLOR_TEMPORARY = (30, 165, 245)     # Amber / Orange
-COLOR_UNKNOWN = (160, 160, 160)      # Neutral Slate
+COLOR_UNKNOWN = (70, 70, 240)        # Security Alert Crimson / Red
 COLOR_HUD_BG = (20, 20, 24)          # Deep Charcoal
 COLOR_ACCENT = (255, 191, 0)         # Cyan / Yellow accent
 COLOR_RETICLE = (0, 255, 255)        # Electric Yellow
+COLOR_ALERT = (0, 0, 255)            # Bright Red
 
 
 def draw_hud_banner(
@@ -39,19 +48,20 @@ def draw_hud_banner(
     target: Optional[TrackedPerson],
     centering: CenteringSignal,
     fps: float,
+    lock_policy: LockPolicy,
     head_turn_sim: bool,
     occlusion_sim: bool,
     show_ptz: bool,
 ):
     """
-    Renders a sleek, translucent floating telemetry HUD that preserves
-    the full visible height of the camera without letterboxing or cropping.
+    Renders an intelligent floating telemetry HUD showing locking policy,
+    intrusion alerts, appearance ReID matching, and gimbal tracking.
     """
     h, w = frame.shape[:2]
 
-    # Floating top card (translucent)
-    card_h = 56
-    card_w = min(w - 20, 880)
+    # Top floating telemetry card
+    card_h = 62
+    card_w = min(w - 20, 960)
     card_x = 10
     card_y = 8
 
@@ -61,46 +71,69 @@ def draw_hud_banner(
     cv2.addWeighted(overlay, 0.72, card_roi, 0.28, 0, card_roi)
     cv2.rectangle(frame, (card_x, card_y), (card_x + card_w, card_y + card_h), (70, 75, 85), 1)
 
-    # Title & FPS
-    cv2.putText(frame, "WHOLE-PERSON TRACKER // 3-STATE MODEL", (card_x + 12, card_y + 20),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.50, (255, 255, 255), 1, cv2.LINE_AA)
-    cv2.putText(frame, f"CPU FPS: {fps:.1f}", (card_x + card_w - 110, card_y + 20),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.48, (0, 255, 200), 1, cv2.LINE_AA)
+    # Policy badge text
+    if lock_policy == LockPolicy.LOCK_UNKNOWN:
+        policy_label = "FACILITY SECURITY [LOCK UNKNOWN INTRUDER]"
+        policy_col = (50, 100, 255)
+    elif lock_policy == LockPolicy.LOCK_KNOWN:
+        policy_label = "AUTHORIZED FOLLOW [LOCK KNOWN MEMBER]"
+        policy_col = (0, 220, 150)
+    else:
+        policy_label = "MANUAL LOCK MODE [OPERATOR DIRECTED]"
+        policy_col = (200, 200, 200)
 
-    # Target info line
+    cv2.putText(frame, f"POLICY: {policy_label}", (card_x + 12, card_y + 18),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.44, policy_col, 1, cv2.LINE_AA)
+    cv2.putText(frame, f"CPU FPS: {fps:.1f}", (card_x + card_w - 110, card_y + 18),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.44, (0, 255, 200), 1, cv2.LINE_AA)
+
+    # Target info line & intrusion warnings
     if target is not None:
-        state_col = COLOR_CONFIRMED if target.state == TrackState.CONFIRMED else (
-            COLOR_TEMPORARY if target.state == TrackState.TEMPORARY else COLOR_UNKNOWN
-        )
+        if target.state == TrackState.UNKNOWN:
+            state_col = COLOR_UNKNOWN
+            badge_text = "[INTRUDER / UNKNOWN]"
+        elif target.state == TrackState.TEMPORARY:
+            state_col = COLOR_TEMPORARY
+            badge_text = "[TEMPORARY]"
+        else:
+            state_col = COLOR_CONFIRMED
+            badge_text = "[CONFIRMED]"
 
-        badge_text = f"[{target.state.value.upper()}]"
-        cv2.putText(frame, badge_text, (card_x + 12, card_y + 44), cv2.FONT_HERSHEY_SIMPLEX, 0.55, state_col, 2, cv2.LINE_AA)
+        cv2.putText(frame, badge_text, (card_x + 12, card_y + 44), cv2.FONT_HERSHEY_SIMPLEX, 0.52, state_col, 2, cv2.LINE_AA)
 
-        target_info = f"{target.identity} #{target.track_id} | Conf: {target.confidence * 100:.1f}%"
-        cv2.putText(frame, target_info, (card_x + 130, card_y + 44), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (230, 230, 230), 1, cv2.LINE_AA)
+        target_info = f"ID: {target.identity} #{target.track_id} | Conf: {target.confidence * 100:.1f}%"
+        cv2.putText(frame, target_info, (card_x + 175, card_y + 44), cv2.FONT_HERSHEY_SIMPLEX, 0.46, (230, 230, 230), 1, cv2.LINE_AA)
 
         # Confidence Decay Bar
-        bar_x = card_x + 380
+        bar_x = card_x + 420
         bar_y = card_y + 32
-        bar_w = 110
+        bar_w = 100
         bar_h = 12
         cv2.rectangle(frame, (bar_x, bar_y), (bar_x + bar_w, bar_y + bar_h), (45, 45, 50), -1)
         fill_w = int(bar_w * max(0.0, min(1.0, target.confidence)))
         cv2.rectangle(frame, (bar_x, bar_y), (bar_x + fill_w, bar_y + bar_h), state_col, -1)
         cv2.rectangle(frame, (bar_x, bar_y), (bar_x + bar_w, bar_y + bar_h), (110, 110, 120), 1)
 
-        # Decay timer in Temporary state
-        if target.state == TrackState.TEMPORARY and target.last_face_seen_time:
+        # Appearance ReID tag or Facial loss timer
+        if target.is_facing_away:
+            cv2.putText(frame, f"[BACK TURNED // Appearance ReID: {target.appearance_similarity * 100:.0f}%]",
+                        (bar_x + bar_w + 10, card_y + 43), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0, 220, 255), 1, cv2.LINE_AA)
+        elif target.state == TrackState.TEMPORARY and target.last_face_seen_time:
             dt_loss = time.time() - target.last_face_seen_time
-            cv2.putText(frame, f"Facial Loss: {dt_loss:.1f}s (exp decay)", (bar_x + bar_w + 10, card_y + 43),
+            cv2.putText(frame, f"Face Lost: {dt_loss:.1f}s", (bar_x + bar_w + 10, card_y + 43),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.42, COLOR_TEMPORARY, 1, cv2.LINE_AA)
+        elif target.state == TrackState.UNKNOWN and lock_policy == LockPolicy.LOCK_UNKNOWN:
+            cv2.putText(frame, "🚨 INTRUDER AUTO-LOCKED", (bar_x + bar_w + 10, card_y + 43),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.44, (50, 50, 255), 2, cv2.LINE_AA)
+
     else:
-        cv2.putText(frame, "STATUS: SEARCHING // NO TARGET LOCKED", (card_x + 12, card_y + 44),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.48, (160, 160, 160), 1, cv2.LINE_AA)
+        status_msg = "FACILITY SECURE // SCANNING FOR UNKNOWN INTRUDERS..." if lock_policy == LockPolicy.LOCK_UNKNOWN else "SEARCHING FOR REGISTERED PERSONNEL..."
+        cv2.putText(frame, status_msg, (card_x + 12, card_y + 44),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.46, (160, 160, 160), 1, cv2.LINE_AA)
 
     # Sleek bottom floating pill for Gimbal & scenarios status
     pill_h = 28
-    pill_w = min(w - 20, 840)
+    pill_w = min(w - 20, 920)
     pill_x = 10
     pill_y = h - pill_h - 10
 
@@ -113,11 +146,10 @@ def draw_hud_banner(
     deadband_status = "CENTERED" if centering.in_deadband else "ADJUSTING"
     ptz_str = (
         f"GIMBAL: Pan {centering.pan_angle_deg:+.1f} deg | Tilt {centering.tilt_angle_deg:+.1f} deg | "
-        f"Err ({centering.norm_error_x:+.2f}, {centering.norm_error_y:+.2f}) [{deadband_status}]"
+        f"Err ({centering.norm_error_x:+.2f}, {centering.norm_error_y:+.2f}) [{deadband_status}] | Policy Key: [M]"
     )
     cv2.putText(frame, ptz_str, (pill_x + 10, pill_y + 18), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (200, 235, 255), 1, cv2.LINE_AA)
 
-    # Test scenario indicators
     indicators = []
     if head_turn_sim:
         indicators.append("[H: TURN ACTIVE]")
@@ -128,7 +160,7 @@ def draw_hud_banner(
 
     if indicators:
         tag_str = " ".join(indicators)
-        cv2.putText(frame, tag_str, (pill_x + pill_w - 220, pill_y + 18), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0, 220, 255), 1, cv2.LINE_AA)
+        cv2.putText(frame, tag_str, (pill_x + pill_w - 230, pill_y + 18), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0, 220, 255), 1, cv2.LINE_AA)
 
 
 def draw_centering_reticle(
@@ -136,7 +168,6 @@ def draw_centering_reticle(
     target_pt: Optional[Tuple[float, float]],
     centering: CenteringSignal,
 ):
-    """Draws target centering crosshair, deadband box, and centering error vector."""
     h, w = frame.shape[:2]
     cx, cy = w // 2, h // 2
 
@@ -150,7 +181,6 @@ def draw_centering_reticle(
     if target_pt is not None:
         tx, ty = int(target_pt[0]), int(target_pt[1])
 
-        # Error vector from optical center to target
         vector_col = (0, 255, 200) if centering.in_deadband else (0, 150, 255)
         cv2.arrowedLine(frame, (cx, cy), (tx, ty), vector_col, 2, tipLength=0.18)
 
@@ -162,7 +192,6 @@ def draw_centering_reticle(
 
 
 def draw_track_visuals(frame: np.ndarray, track: TrackedPerson, is_selected: bool):
-    """Renders whole-person bounding box, face association, and state labels."""
     bx1, by1, bx2, by2 = track.body_box
 
     if track.state == TrackState.CONFIRMED:
@@ -173,26 +202,28 @@ def draw_track_visuals(frame: np.ndarray, track: TrackedPerson, is_selected: boo
         border_thick = 3 if is_selected else 2
     else:
         col = COLOR_UNKNOWN
-        border_thick = 2 if is_selected else 1
+        border_thick = 3 if is_selected else 1
 
-    # Body Box (drawn with rounded feel / crisp lines)
+    # Body Box
     cv2.rectangle(frame, (bx1, by1), (bx2, by2), col, border_thick)
 
     # Face Box (if visible)
     if track.current_face_box is not None:
         fx1, fy1, fx2, fy2 = track.current_face_box
         cv2.rectangle(frame, (fx1, fy1), (fx2, fy2), (0, 255, 255), 2)
-        # Connector line
         cv2.line(frame, (int((fx1 + fx2) / 2), fy2), (int((bx1 + bx2) / 2), by1), (0, 255, 255), 1)
 
-    # State label tag above or inside body box
-    state_tag = track.state.value.upper()
-    label = f"{track.identity} #{track.track_id} [{state_tag}] {track.confidence * 100:.0f}%"
+    # Label text
+    if track.is_facing_away:
+        label = f"{track.identity} #{track.track_id} [BACK TURNED (ReID {track.appearance_similarity * 100:.0f}%)]"
+    else:
+        state_tag = "INTRUDER" if track.state == TrackState.UNKNOWN else track.state.value.upper()
+        label = f"{track.identity} #{track.track_id} [{state_tag}] {track.confidence * 100:.0f}%"
 
     (lw, lh), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.46, 1)
     label_y1 = max(0, by1 - lh - 8)
     cv2.rectangle(frame, (bx1, label_y1), (bx1 + lw + 8, by1), col, -1)
-    cv2.putText(frame, label, (bx1 + 4, by1 - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.46, (0, 0, 0), 1, cv2.LINE_AA)
+    cv2.putText(frame, label, (bx1 + 4, by1 - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.46, (255, 255, 255), 1, cv2.LINE_AA)
 
     # Motion Trajectory tail
     if len(track.kalman.history) > 1:
@@ -201,10 +232,11 @@ def draw_track_visuals(frame: np.ndarray, track: TrackedPerson, is_selected: boo
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Whole-Person Tracking with Honest 3-State Model & Target Centering")
-    # Default to internal computer webcam
-    parser.add_argument("--cam", default="internal", help="Camera index: 'internal' (default computer webcam), 'auto' (external USB), or numeric index (e.g. 0)")
-    parser.add_argument("--target", default="Sonia", help="Target identity name to prioritize locking onto")
+    parser = argparse.ArgumentParser(description="Whole-Person Tracking with YuNet, YOLOX, Appearance ReID & Auto-Locking")
+    parser.add_argument("--cam", default="internal", help="Camera index ('internal' for computer webcam, 'auto' for external)")
+    parser.add_argument("--target", default="Sonia", help="Target identity name to prioritize locking onto in known mode")
+    parser.add_argument("--lock-policy", default="unknown", choices=["unknown", "known", "manual"],
+                        help="Robotic locking policy: 'unknown' (facility security intruder lock), 'known' (authorized follow), or 'manual'")
     parser.add_argument("--decay-half-life", type=float, default=2.5, help="Confidence decay half-life in seconds")
     parser.add_argument("--match-thresh", type=float, default=0.40, help="ArcFace match distance threshold")
     parser.add_argument("--list-cams", action="store_true", help="List detected cameras and exit")
@@ -216,19 +248,30 @@ def main():
         print_camera_list()
         return
 
-    print("\n" + "=" * 65)
-    print("WHOLE-PERSON TRACKER // HONEST 3-STATE TEMPORAL CONTINUITY")
-    print("=" * 65)
+    # Map lock policy
+    policy_map = {
+        "unknown": LockPolicy.LOCK_UNKNOWN,
+        "known": LockPolicy.LOCK_KNOWN,
+        "manual": LockPolicy.MANUAL,
+    }
+    cur_policy = policy_map[args.lock_policy]
+
+    print("\n" + "=" * 68)
+    print("WHOLE-PERSON TRACKER // ROBOTIC AUTO-LOCKING & APPEARANCE ReID")
+    print("=" * 68)
+    print(f"[*] Locking Policy:     {cur_policy.value}")
     print(f"[*] Target Identity:    {args.target}")
-    print(f"[*] Decay Half-Life:    {args.decay_half_life:.1f} seconds")
-    print(f"[*] Match Threshold:    {args.match_thresh:.2f}")
+    print(f"[*] Face Detector:      OpenCV YuNet Deep Learning (CNN ONNX)")
+    print(f"[*] Body Detector:      Hybrid (YOLOX-Nano ONNX + MediaPipe Pose)")
+    print(f"[*] Appearance Model:   Torso Clothing Color Signature (ReID across Back Turns)")
     print(f"[*] Camera Selection:   {args.cam} (Computer Webcam)")
-    print("=" * 65)
+    print("=" * 68)
 
     tracker = WholePersonFaceTracker(
         target_name=args.target,
         decay_half_life=args.decay_half_life,
         match_thresh=args.match_thresh,
+        lock_policy=cur_policy,
     )
 
     ptz_controller = VirtualPTZController()
@@ -241,24 +284,23 @@ def main():
             print("ERROR: Could not open any camera device.")
             sys.exit(1)
 
-    WINDOW_NAME = "Whole-Person Tracker & Face Association (Honest 3-State)"
+    WINDOW_NAME = "Whole-Person Tracker & Face Association (YuNet + YOLOX + ReID)"
 
     if not args.headless:
-        # Create normal, fully resizable window that does not get cut off by taskbar
         cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
-        # Initial comfortable 16:9 view that fits display height
         cv2.resizeWindow(WINDOW_NAME, 1180, 740)
 
-    print("\nHotkeys:")
+    print("\nInteractive Hotkeys:")
+    print("  [M]     : Cycle Locking Policy (Lock Unknown Intruder <-> Lock Known Member <-> Manual)")
     print("  [H]     : Toggle Head-Turn Mode (simulates facial loss to test Temporary decay)")
     print("  [O]     : Toggle Simulated Occluder Box (tests passing behind obstacles)")
-    print("  [P]     : Toggle Virtual PTZ Zoomed Software Gimbal Window")
-    print("  [F]     : Toggle Fullscreen Mode (maximize to full screen height)")
-    print("  [U]     : Toggle HUD Overlay On/Off (view 100% clean camera stream)")
-    print("  [T]     : Cycle Locked Target Track")
+    print("  [P]     : Toggle Virtual PTZ Zoomed Software Gimbal View")
+    print("  [F]     : Toggle Fullscreen Mode")
+    print("  [U]     : Toggle HUD Overlay On/Off")
+    print("  [T]     : Cycle Locked Target Track (in Manual mode)")
     print("  [C]     : Recenter Virtual Gimbal to 0 deg")
     print("  [Q/ESC] : Quit")
-    print("=" * 65 + "\n")
+    print("=" * 68 + "\n")
 
     sim_head_turn = False
     sim_occlusion = False
@@ -298,7 +340,7 @@ def main():
                 simulated_occlusion_box=occlusion_box,
             )
 
-            # Get selected target
+            # Get selected target based on active lock policy
             target = tracker.get_selected_target()
             target_pt = target.upper_center if target is not None else None
 
@@ -312,28 +354,25 @@ def main():
             # Draw visual tracking annotations
             display_frame = frame.copy()
 
-            # Draw tracks
             for t in tracks:
                 is_selected = (target is not None and t.track_id == target.track_id)
                 draw_track_visuals(display_frame, t, is_selected)
 
-            # Draw Centering Reticle & Vectors
             draw_centering_reticle(display_frame, target_pt, centering)
 
-            # Draw Simulated Occluder Box if active
             if occlusion_box is not None:
                 ox1, oy1, ox2, oy2 = occlusion_box
                 cv2.rectangle(display_frame, (ox1, oy1), (ox2, oy2), (40, 40, 45), -1)
                 cv2.putText(display_frame, "|| OCCLUDER OBSTACLE ||", (ox1 + 10, oy1 + 35),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 200, 255), 2)
 
-            # Draw Telemetry HUD
             if show_hud:
                 draw_hud_banner(
                     frame=display_frame,
                     target=target,
                     centering=centering,
                     fps=fps,
+                    lock_policy=tracker.lock_policy,
                     head_turn_sim=sim_head_turn,
                     occlusion_sim=sim_occlusion,
                     show_ptz=show_ptz_view,
@@ -362,6 +401,12 @@ def main():
 
                 if key in (ord('q'), 27):  # Q or ESC
                     break
+                elif key == ord('m'):
+                    # Cycle locking policy
+                    policies = [LockPolicy.LOCK_UNKNOWN, LockPolicy.LOCK_KNOWN, LockPolicy.MANUAL]
+                    cur_idx = policies.index(tracker.lock_policy)
+                    tracker.lock_policy = policies[(cur_idx + 1) % len(policies)]
+                    print(f"[*] Switched Locking Policy to: {tracker.lock_policy.value}")
                 elif key == ord('h'):
                     sim_head_turn = not sim_head_turn
                     print(f"[*] Head-Turn Simulation: {'ACTIVE (Face Suppressed)' if sim_head_turn else 'OFF (Face Enabled)'}")
@@ -377,7 +422,6 @@ def main():
                     is_fullscreen = not is_fullscreen
                     prop = cv2.WINDOW_FULLSCREEN if is_fullscreen else cv2.WINDOW_NORMAL
                     cv2.setWindowProperty(WINDOW_NAME, cv2.WND_PROP_FULLSCREEN, prop)
-                    print(f"[*] Fullscreen Mode: {'ENABLED' if is_fullscreen else 'NORMAL'}")
                 elif key == ord('c'):
                     ptz_controller.reset()
                     print("[*] Virtual Gimbal Recentered to 0 deg.")

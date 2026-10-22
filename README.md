@@ -64,14 +64,25 @@ python -m src.mqtt_tachometer_tracker --target Sonia
 ### Firmware
 Firmware file is located at [`firmware/nodemcu_stepper_tachometer/nodemcu_stepper_tachometer.ino`](file:///c:/Users/user/Videos/face-recognition-5pt/firmware/nodemcu_stepper_tachometer/nodemcu_stepper_tachometer.ino).
 
-## Whole-Person Tracking & Face-Association (Honest 3-State Model)
+## Whole-Person Tracking & Face-Association (YuNet + YOLOX + ReID)
 
-Maintains temporal identity continuity across temporary facial loss through an **honest three-state model** with **exponential confidence decay**:
-- **CONFIRMED**: Person body is tracked and actively verified via ArcFace face embedding ($C \approx 0.70 - 1.0$).
-- **TEMPORARY**: Face is temporarily lost (e.g., head turn, looking away, momentary occlusion), but the whole-person body track continues to be observed via Kalman/Pose tracking. Confidence decays exponentially:
-  $$C(t) = C_0 \cdot \exp(-\lambda \Delta t) \quad \text{where} \quad \lambda = \frac{\ln 2}{t_{1/2}}$$
-  If the face reappears on this body before confidence falls below threshold, identity restores to **CONFIRMED** with zero identity switch.
-- **UNKNOWN**: Confidence has decayed below the confirmation threshold ($C < 0.35$), or the track never possessed a verified face.
+Modern robotics tracking and face-association system with deep learning, appearance ReID, and robotic automatic locking policies:
+- **Face Detection (YuNet)**: Modern deep learning CNN (`cv2.FaceDetectorYN`) running on CPU (<10ms), replacing legacy Haar cascades, with direct 5-point landmark regression.
+- **Body Detection (YOLOX-Nano ONNX + MediaPipe Pose)**: Deep learning body bounding box detection across sitting, standing, and partial angles.
+- **Appearance Re-Identification (Clothing Color Signature)**: Extracts normalized torso clothing color histograms (ReID) to maintain identity continuity **even when a person turns their back to the camera or covers their face**.
+- **Face Recognition (ArcFace)**: 512-D L2-normalized deep embeddings compared via cosine similarity.
+- **Honest Three-State Model**: `CONFIRMED` (green), `TEMPORARY` (amber with exponential decay and appearance cushioning), and `UNKNOWN` (crimson security alert).
+
+### Robotic Automatic Locking Policies
+The system supports smart facility access and security locking:
+1. **Lock by Unknown (`--lock-policy unknown`) [Facility Security Intruder Mode]**:
+   - For compounds, facilities, and secure buildings where all authorized occupants are enrolled.
+   - When an unverified stranger / intruder appears in the facility, the robotic system **automatically locks onto them** immediately and tracks their movements.
+2. **Lock by Known (`--lock-policy known`) [Authorized Follow Mode]**:
+   - Follows and centers onto enrolled facility members (or a specified target like `--target Sonia`).
+3. **Manual Lock (`--lock-policy manual`)**:
+   - Operator-controlled tracking.
+   - Press **`M`** at any time during runtime to cycle between policies!
 
 ### Closed-Loop Target Centering Logic (Virtual PTZ Gimbal)
 Operates completely without physical hardware components:
@@ -81,14 +92,17 @@ Operates completely without physical hardware components:
 
 ### Run Live Webcam Tracker
 ```bash
-python -m src.person_face_tracker --target Sonia
+python -m src.person_face_tracker --lock-policy unknown
 ```
-*(Options: `--cam auto` or `--cam 0`, `--decay-half-life 2.5`, `--match-thresh 0.40`)*
+*(Options: `--cam internal` or `--cam 0`, `--lock-policy known`, `--target Sonia`, `--decay-half-life 2.5`)*
 
 **Interactive Hotkeys:**
-- `H` : Toggle simulated head turn (suppresses facial landmarks to test Temporary decay state)
+- `M` : Toggle Locking Policy (Lock Unknown Intruder <-> Lock Known Member <-> Manual)
+- `H` : Toggle simulated head turn (simulates facial loss to test Temporary decay)
 - `O` : Toggle simulated obstacle occluder (tests walking behind barriers)
 - `P` : Toggle Virtual PTZ zoomed software gimbal window
+- `F` : Toggle Fullscreen mode
+- `U` : Toggle HUD Overlay on/off (view clean camera feed)
 - `T` : Cycle selected target track
 - `C` : Recenter virtual gimbal to 0°
 - `Q` / `ESC` : Quit session
